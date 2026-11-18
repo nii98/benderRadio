@@ -15,12 +15,9 @@
     "volume": 10,
     "volume_steps": 21,
     "stations": [
-      { "name": "Radio 1 Rock",      "url": "http://stream81.metacast.eu/radio1rock128" },
-      { "name": "Европа Плюс",       "url": "https://ep128.hostingradio.ru:8030/ep128" },
-      { "name": "Наше Радио",        "url": "http://nashe1.hostingradio.ru/nashe-128.mp3" },
-      { "name": "Radio Paradise",    "url": "https://stream.radioparadise.com/mp3-192" },
-      { "name": "NPO Radio 1",       "url": "http://icecast.omroep.nl/radio1-bb-mp3" },
-      { "name": "Majestic Jukebox",  "url": "https://uk3.internet-radio.com/proxy/majesticjukebox?mp=/live" }
+     
+      { "name": "Европа Плюс",       "url": "https://europaplus.hostingradio.ru:8030/ep128" }
+      
     ]
   },
 
