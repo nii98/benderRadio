@@ -1,0 +1,20 @@
+[Unit]
+Description=BendeRadio (Orange Pi One) — интернет-радио «голова Бендера»
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/benderadio/run.py --config /etc/benderadio/config.json
+WorkingDirectory=/opt/benderadio
+Restart=always
+RestartSec=5
+# GPIO через sysfs/libgpiod требует root (или группы gpio)
+User=root
+# звук и сеть приоритетнее «лица» — не даём планировщику душить поток
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+[Install]
+WantedBy=multi-user.target
