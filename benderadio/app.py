@@ -453,16 +453,45 @@ def main(argv=None):
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="путь к config.json")
     parser.add_argument("--selftest", action="store_true", help="прогнать самопроверку и выйти")
     parser.add_argument("--simulate", action="store_true", help="без железа: матрица в консоль, звук синтетический")
-    parser.add_argument("--test", choices=("eyes", "encoder", "matrix", "all"), default=None,
-                        help="тест железа без Wi-Fi и звука: глаза / энкодер / матрица / всё")
+    parser.add_argument("--test", choices=("diag", "eyes", "encoder", "matrix", "all"), default=None,
+                        help="тест железа без Wi-Fi и звука: diag / глаза / энкодер / матрица / всё")
+    parser.add_argument("--brightness", type=int, default=None,
+                        help="яркость матрицы 0..15 (быстро проверить, не в яркости ли дело)")
+    parser.add_argument("--driver", choices=("sysfs", "spi", "sim"), default=None,
+                        help="принудительный драйвер матрицы (перекрывает config.json)")
+    parser.add_argument("--cs", type=int, default=None, help="GPIO-линия CS (перекрывает config.json)")
+    parser.add_argument("--din", type=int, default=None, help="GPIO-линия DIN")
+    parser.add_argument("--clk", type=int, default=None, help="GPIO-линия CLK")
     parser.add_argument("--duration", type=float, default=None, help="остановиться через N секунд")
     parser.add_argument("--state", default=None, help="переопределить файл настроек")
     parser.add_argument("--log-level", default=None, help="DEBUG/INFO/WARNING")
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    cfg["_path"] = args.config
     if args.state:
         cfg.setdefault("storage", {})["state_file"] = args.state
+
+    # быстрые перекрытия для проверки железа без правки конфига
+    matrix_cfg = cfg.setdefault("matrix", {})
+    if args.driver:
+        matrix_cfg["driver"] = args.driver
+    if args.cs is not None or args.din is not None or args.clk is not None:
+        gpio_cfg = matrix_cfg.setdefault("gpio", {})
+        if args.cs is not None:
+            gpio_cfg["cs"] = args.cs
+        if args.din is not None:
+            gpio_cfg["din"] = args.din
+        if args.clk is not None:
+            gpio_cfg["clk"] = args.clk
+    if args.brightness is not None:
+        bright = max(0, min(15, args.brightness))
+        matrix_cfg["brightness"] = [bright] * int(matrix_cfg.get("modules", 5))
+        matrix_cfg["test_brightness"] = bright  # его используют тестовые режимы
+        ui_cfg = cfg.setdefault("ui", {})
+        ui_cfg["brightness_mouth"] = bright
+        ui_cfg["brightness_eyes"] = bright
+
     level = (args.log_level or cfg.get("logging", {}).get("level") or "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO),
                         format="%(asctime)s %(levelname)-7s %(message)s",

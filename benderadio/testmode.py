@@ -1,5 +1,6 @@
-﻿"""Тестовые режимы: проверить железо без Wi-Fi, ffmpeg и звука.
+"""Тестовые режимы: проверить железо без Wi-Fi, ffmpeg и звука.
 
+    python3 run.py --test diag      # диагностика GPIO/SPI: права, пины, занятость
     python3 run.py --test eyes      # глаза + анализатор (анимация)
     python3 run.py --test encoder   # энкодер и кнопка (события в консоль и на матрицу)
     python3 run.py --test matrix    # шаблоны на матрице: порядок модулей, битые пиксели
@@ -9,6 +10,7 @@
 """
 
 import math
+import os
 import time
 
 import encoder as encoder_mod
@@ -18,11 +20,50 @@ import max7219
 
 PHASE_IDS = ("поиск сети", "глаза + анализатор", "показ громкости", "выключенное лицо")
 
+TEST_BRIGHTNESS = 15  # в тестах светим на максимум, чтобы «не видно» не сбивало с толку
+
 
 def _log(log):
     if callable(log):
         return log
     return print
+
+
+def _matrix_brief(cfg):
+    mcfg = cfg.get("matrix", {})
+    pins = max7219.gpio_pins(cfg)
+    return "driver=%s модулей=%s cs=%s din=%s clk=%s" % (
+        mcfg.get("driver", "sysfs"), mcfg.get("modules", 5),
+        pins["cs"], pins["din"], pins["clk"])
+
+
+def _brightness(cfg):
+    """Яркость для тестов: берём из --brightness (matrix.test_brightness) или максимум."""
+    try:
+        return max(0, min(15, int(cfg.get("matrix", {}).get("test_brightness", TEST_BRIGHTNESS))))
+    except Exception:
+        return TEST_BRIGHTNESS
+
+
+def _make_matrix(cfg, log, simulate):
+    """Создать матрицу, но с человеческим сообщением вместо traceback."""
+    try:
+        matrix = max7219.create_matrix(cfg, log, simulate)
+    except max7219.GpioError as exc:
+        log("")
+        log("НЕ СМОГ ПОДНЯТЬ МАТРИЦУ: %s" % exc)
+        log("запустите диагностику:  python3 run.py --config %s --test diag" %
+            cfg.get("_path", "config.json"))
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log("")
+        log("НЕ СМОГ ПОДНЯТЬ МАТРИЦУ (%s): %s" % (type(exc).__name__, exc))
+        log("запустите диагностику:  python3 run.py --config %s --test diag" %
+            cfg.get("_path", "config.json"))
+        return None
+
+    matrix.set_brightness([_brightness(cfg)] * matrix.modules)
+    return matrix
 
 
 # ======================================================================
@@ -55,10 +96,14 @@ def _pattern_stripes(matrix):
 def run_matrix_test(cfg, log=print, duration=None, simulate=False):
     """Проверка: заливка, порядок модулей, яркость, битые пиксели."""
     log = _log(log)
-    matrix = max7219.create_matrix(cfg, log, simulate)
+    bright = _brightness(cfg)
+    log("матрица: %s" % _matrix_brief(cfg))
+    matrix = _make_matrix(cfg, log, simulate)
+    if matrix is None:
+        return 1
     matrix.init_chip()
     n = matrix.modules
-    log("== тест матрицы: %d модулей, %d x %d ==" % (n, matrix.width, matrix.height))
+    log("== тест матрицы: %d модулей, %d x %d, яркость %d ==" % (n, matrix.width, matrix.height, bright))
     log("1) заливка: должны гореть ВСЕ точки на всех модулях")
     log("2) по одному модулю слева-направо: слева должен загораться первый,")
     log("   и так до правого. Если порядок обратный — модули подключены задом наперёд.")
@@ -70,7 +115,7 @@ def run_matrix_test(cfg, log=print, duration=None, simulate=False):
     try:
         while True:
             cycle += 1
-            matrix.set_brightness([8] * n)
+            matrix.set_brightness([bright] * n)
 
             _pattern_all(matrix)
             matrix.flush()
@@ -92,7 +137,7 @@ def run_matrix_test(cfg, log=print, duration=None, simulate=False):
                 if _wait(duration, started, 0.3):
                     return 0
 
-            matrix.set_brightness([8] * n)
+            matrix.set_brightness([bright] * n)
             _pattern_checker(matrix)
             matrix.flush()
             log("  [%d] шахматка" % cycle)
@@ -121,13 +166,19 @@ def run_matrix_test(cfg, log=print, duration=None, simulate=False):
 def run_eyes_test(cfg, log=print, duration=None, simulate=False):
     """Анимация лица с искусственным уровнем звука (без сети и без аудио)."""
     log = _log(log)
-    matrix = max7219.create_matrix(cfg, log, simulate)
+    bright = _brightness(cfg)
+    log("матрица: %s" % _matrix_brief(cfg))
+    matrix = _make_matrix(cfg, log, simulate)
+    if matrix is None:
+        return 1
     ui = dict(cfg.get("ui", {}))
+    ui["brightness_mouth"] = bright
+    ui["brightness_eyes"] = bright
     face = face_mod.Face(matrix, ui, log)
     face.init()
     face.set_state(True)
 
-    log("== тест глаз ==")
+    log("== тест глаз (яркость %d/%d) ==" % (bright, bright))
     log("смотрите на матрицу: 1) зрачки «ищут сеть», 2) блуждают и реагируют на «биты»,")
     log("3) на «рту» бежит анализатор, 4) показывается громкость, 5) лицо «засыпает».")
     log("Ctrl+C — выход")
@@ -183,15 +234,21 @@ def run_eyes_test(cfg, log=print, duration=None, simulate=False):
 def run_encoder_test(cfg, log=print, duration=None, simulate=False):
     """Только энкодер: каждое событие — в консоль и на матрицу."""
     log = _log(log)
-    matrix = max7219.create_matrix(cfg, log, simulate)
+    bright = _brightness(cfg)
+    log("матрица: %s" % _matrix_brief(cfg))
+    matrix = _make_matrix(cfg, log, simulate)
+    if matrix is None:
+        return 1
     ui = dict(cfg.get("ui", {}))
+    ui["brightness_mouth"] = bright
+    ui["brightness_eyes"] = bright
     face = face_mod.Face(matrix, ui, log)
     face.init()
     face.set_state(True)
 
     enc = encoder_mod.Encoder(cfg.get("encoder", {}), log, simulate)
 
-    log("== тест энкодера ==")
+    log("== тест энкодера (яркость %d) ==" % bright)
     log("крутите ручку — на матрице растёт/убывает число, в консоли события 'turn'")
     log("нажмите кнопку — 'press'/'release', удержите 1.2 с — 'hold' (яркость)")
     log("1 клик — 'clicks 1', 2 клика — 'clicks 2', 3 клика — 'clicks 3'")
@@ -256,14 +313,20 @@ def run_encoder_test(cfg, log=print, duration=None, simulate=False):
 def run_all_test(cfg, log=print, duration=None, simulate=False):
     """Энкодер + глаза одновременно: полный прогон «железа» без сети."""
     log = _log(log)
-    matrix = max7219.create_matrix(cfg, log, simulate)
+    bright = _brightness(cfg)
+    log("матрица: %s" % _matrix_brief(cfg))
+    matrix = _make_matrix(cfg, log, simulate)
+    if matrix is None:
+        return 1
     ui = dict(cfg.get("ui", {}))
+    ui["brightness_mouth"] = bright
+    ui["brightness_eyes"] = bright
     face = face_mod.Face(matrix, ui, log)
     face.init()
     face.set_state(True)
 
     enc = encoder_mod.Encoder(cfg.get("encoder", {}), log, simulate)
-    log("== общий тест: глаза + энкодер ==")
+    log("== общий тест: глаза + энкодер (яркость %d) ==" % bright)
     log("крутите/нажимайте энкодер — лицо реагирует (злой взгляд, прищур, 'v NN')")
     log("Ctrl+C — выход")
 
@@ -304,6 +367,89 @@ def run_all_test(cfg, log=print, duration=None, simulate=False):
 
 
 # ======================================================================
+#  диагностика: почему ничего не светится
+# ======================================================================
+def _run_cmd(cmd, timeout=5):
+    import shutil
+    import subprocess
+    if not shutil.which(cmd[0]):
+        return None
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, timeout=timeout)
+        return (res.stdout or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        return "ошибка: %s" % exc
+
+
+def run_diag(cfg, log=print, duration=None, simulate=False):
+    """Проверить всё, из-за чего матрица может не светиться."""
+    log = _log(log)
+    problems = []
+
+    log("== диагностика BendeRadio ==")
+    log("матрица: %s" % _matrix_brief(cfg))
+    log("")
+
+    # 1. права
+    if simulate:
+        log("1) права: пропущено (симуляция)")
+    elif max7219.has_root():
+        log("1) права: root — ок")
+    else:
+        log("1) права: НЕ root — sysfs GPIO почти наверняка не даст писать")
+        problems.append("запустить от root: sudo python3 run.py --config ... --test diag")
+
+    # 2. sysfs
+    sysfs = os.path.exists("/sys/class/gpio") if not simulate else False
+    log("2) sysfs GPIO (/sys/class/gpio): %s" % ("есть" if sysfs else "НЕТ"))
+    if not simulate and not sysfs:
+        problems.append("в ядре нет sysfs GPIO — используйте matrix.driver = \"spi\" (overlay spi-spidev)")
+
+    # 3. пины
+    log("3) пины матрицы (cs, din, clk):")
+    rows = max7219.probe_pins(cfg, simulate=simulate)
+    for row in rows:
+        mark = "OK  " if row["ok"] else "FAIL"
+        log("   %-4s %-3s линия %-3d  %s" % (mark, row["name"], row["line"], row["detail"]))
+        if not row["ok"]:
+            problems.append("пин %s (линия %d): %s" % (row["name"], row["line"], row["detail"]))
+
+    # 4. SPI
+    log("4) SPI: %s" % (", ".join(max7219.spi_devices()) or "устройств /dev/spidev* нет"))
+    if not max7219.spi_devices():
+        log("   (для driver=spi включите в /boot/armbianEnv.txt: overlays=spi-spidev)")
+    gpio_chip = _run_cmd(["gpiodetect"])
+    if gpio_chip:
+        log("   gpiodetect: %s" % gpio_chip.splitlines()[0])
+
+    # 5. звук (информационно)
+    for tool in ("ffmpeg", "aplay", "amixer"):
+        path = _run_cmd(["which", tool]) if not simulate else "пропуск"
+        log("5) %-7s %s" % (tool, path if path else "НЕ найден"))
+
+    # 6. выводы
+    log("")
+    if problems:
+        log("НАЙДЕНЫ ПРОБЛЕМЫ:")
+        for i, p in enumerate(problems, 1):
+            log("  %d. %s" % (i, p))
+    else:
+        log("Проблем с GPIO не видно — значит смотрите питание и провода:")
+        log("  * MAX7219 питается от 5 В, земля общая с платой;")
+        log("  * логика 3.3 В при питании 5 В — на границе допуска (VIH=3.5 В):")
+        log("    если не работает, попробуйте питание модуля 3.3 В или level shifter;")
+        log("  * цепочка: DIN платы -> DIN первого модуля -> DOUT -> DIN следующего;")
+        log("  * драйвер должен быть либо sysfs (без overlay), либо spi (с overlay), не оба;")
+        log("  * проверьте тестом матрицы: python3 run.py --config ... --test matrix")
+
+    log("")
+    log("Подсказка по линиям H3: PA=0..23, PB=32.., PC=64.., PD=96.., PG=192..")
+    log("  SPI0 в разъёме: MOSI=PC0(64) пин 19, CLK=PC2(66) пин 23, CS=PC3(67) пин 24")
+    return 0 if not problems else 2
+
+
+# ======================================================================
 def _wait(duration, started, seconds):
     """Подождать seconds, но не дольше duration. True — пора выходить."""
     end = time.monotonic() + seconds
@@ -317,6 +463,7 @@ def _wait(duration, started, seconds):
 def run(target, cfg, log=print, duration=None, simulate=False):
     """Запустить нужный тест по имени."""
     targets = {
+        "diag": run_diag,
         "eyes": run_eyes_test,
         "encoder": run_encoder_test,
         "matrix": run_matrix_test,
@@ -325,3 +472,4 @@ def run(target, cfg, log=print, duration=None, simulate=False):
     if target not in targets:
         raise ValueError("неизвестный тест: %r (есть: %s)" % (target, ", ".join(targets)))
     return targets[target](cfg, log=log, duration=duration, simulate=simulate)
+
