@@ -430,6 +430,18 @@ def selftest(cfg_path):
     check("энкодер (sim): генерирует события", len(events) > 5, "%d событий" % len(events))
     check("энкодер (sim): есть повороты", any(e[0] == "turn" for e in events))
 
+    # тестовые режимы в симуляции — чтобы они не падали на реальной плате
+    import testmode
+    quiet_cfg = json.loads(json.dumps(cfg))
+    quiet_cfg.setdefault("matrix", {})["quiet"] = True
+    broken = []
+    for target in ("matrix", "eyes", "encoder", "all"):
+        try:
+            testmode.run(target, quiet_cfg, log=lambda *a: None, duration=0.3, simulate=True)
+        except Exception as exc:
+            broken.append("%s: %s" % (target, exc))
+    check("тестовые режимы запускаются", not broken, "; ".join(broken))
+
     ok = all(results)
     print("== итог: %s ==" % ("ВСЁ ОК" if ok else "ЕСТЬ ОШИБКИ"))
     return 0 if ok else 1
@@ -441,6 +453,8 @@ def main(argv=None):
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="путь к config.json")
     parser.add_argument("--selftest", action="store_true", help="прогнать самопроверку и выйти")
     parser.add_argument("--simulate", action="store_true", help="без железа: матрица в консоль, звук синтетический")
+    parser.add_argument("--test", choices=("eyes", "encoder", "matrix", "all"), default=None,
+                        help="тест железа без Wi-Fi и звука: глаза / энкодер / матрица / всё")
     parser.add_argument("--duration", type=float, default=None, help="остановиться через N секунд")
     parser.add_argument("--state", default=None, help="переопределить файл настроек")
     parser.add_argument("--log-level", default=None, help="DEBUG/INFO/WARNING")
@@ -456,6 +470,17 @@ def main(argv=None):
 
     if args.selftest:
         return selftest(args.config)
+
+    if args.test:
+        import testmode
+        log.info("тестовый режим: %s (без Wi-Fi и без звука)", args.test)
+        try:
+            return testmode.run(args.test, cfg, log=log.info,
+                                duration=args.duration, simulate=args.simulate)
+        except KeyboardInterrupt:
+            print()
+            log.info("прервано пользователем")
+            return 0
 
     app = App(cfg, simulate=args.simulate, log_fn=log.info)
 

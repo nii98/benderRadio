@@ -227,7 +227,7 @@ def create_matrix(cfg, log=print, simulate=False):
     bright = mcfg.get("brightness")
 
     if simulate:
-        return SimMatrix(modules, bright, out=sys.stdout)
+        return SimMatrix(modules, bright, out=sys.stdout, quiet=bool(mcfg.get("quiet", False)))
 
     driver = str(mcfg.get("driver", "sysfs")).lower()
     if driver == "spi":
