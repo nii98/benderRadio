@@ -121,27 +121,125 @@ class Matrix:
         raise NotImplementedError
 
 
-class SpiMatrix(Matrix):
-    """MAX7219 через аппаратный SPI."""
+class _SpiDevTransport:
+    """SPI через пакет python3-spidev (если он установлен)."""
 
-    def __init__(self, modules=5, bus=0, device=0, speed_hz=1000000, brightness=None):
-        super().__init__(modules, brightness)
-        import spidev  # ставится пакетом python3-spidev
+    name = "python3-spidev"
 
+    def __init__(self, bus, device, speed_hz):
+        import spidev
+
+        path = "/dev/spidev%d.%d" % (int(bus), int(device))
+        if not os.path.exists(path):
+            raise GpioError("%s нет — включите overlay spi-spidev в /boot/armbianEnv.txt" % path)
         self.spi = spidev.SpiDev()
-        self.spi.open(int(bus), int(device))
+        try:
+            self.spi.open(int(bus), int(device))
+        except PermissionError:
+            raise GpioError("нет прав открыть %s — запускайте от root" % path)
         self.spi.max_speed_hz = int(speed_hz)
         self.spi.mode = 0
         self.spi.bits_per_word = 8
 
-    def _send(self, addr, values):
-        self.spi.xfer2([int(addr) & 0xFF] + [int(v) & 0xFF for v in values])
+    def transfer(self, data):
+        self.spi.xfer2(list(data))
 
     def close(self):
         try:
             self.spi.close()
         except Exception:
             pass
+
+
+class _IoctlSpiTransport:
+    """SPI напрямую через ioctl — без python3-spidev (работает «из коробки»)."""
+
+    name = "встроенный ioctl"
+
+    _WR_MODE = 0x40016B01
+    _WR_BITS = 0x40016B03
+    _WR_SPEED = 0x40046B04
+
+    @staticmethod
+    def _message(n=1):
+        # _IOC(_IOC_WRITE, 'k', 0, sizeof(struct spi_ioc_transfer) * n), struct = 32 байта
+        return 0x40000000 | ((32 * n) << 16) | (0x6B << 8)
+
+    def __init__(self, bus, device, speed_hz):
+        import fcntl  # noqa: F401  (проверяем, что мы на Linux)
+        import struct as _struct
+
+        if _struct.calcsize("<QQIIHBBI") != 32:
+            raise GpioError("неожиданный размер struct spi_ioc_transfer — SPI через ioctl небезопасен")
+        self.fcntl = fcntl
+        self.path = "/dev/spidev%d.%d" % (int(bus), int(device))
+        if not os.path.exists(self.path):
+            raise GpioError("%s нет — включите overlay spi-spidev в /boot/armbianEnv.txt" % self.path)
+        try:
+            self.fd = os.open(self.path, os.O_RDWR)
+        except PermissionError:
+            raise GpioError("нет прав открыть %s — запускайте от root" % self.path)
+        self.speed = int(speed_hz)
+        self._ioctl(self._WR_MODE, b"\x00")
+        self._ioctl(self._WR_BITS, b"\x08")
+        self._ioctl(self._WR_SPEED, self.speed.to_bytes(4, "little"))
+
+    def _ioctl(self, request, payload):
+        self.fcntl.ioctl(self.fd, request, payload, True)
+
+    def transfer(self, data):
+        import ctypes
+        import struct
+
+        payload = bytes(bytearray(data))
+        buf = ctypes.create_string_buffer(payload, len(payload))
+        raw = bytearray(32)
+        struct.pack_into("<QQIIHBBI", raw, 0, ctypes.addressof(buf), 0,
+                         len(payload), self.speed, 0, 8, 0, 0)
+        self.fcntl.ioctl(self.fd, self._message(1), raw, True)
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except Exception:
+            pass
+
+
+class SpiMatrix(Matrix):
+    """MAX7219 через аппаратный SPI: spidev, а если его нет — через ioctl."""
+
+    def __init__(self, modules=5, bus=0, device=0, speed_hz=1000000, brightness=None):
+        super().__init__(modules, brightness)
+        errors = []
+        self.transport = None
+        for factory in (_SpiDevTransport, _IoctlSpiTransport):
+            try:
+                self.transport = factory(bus, device, speed_hz)
+                break
+            except GpioError as exc:
+                errors.append("%s: %s" % (factory.__name__, exc))
+            except ImportError as exc:
+                missing = getattr(exc, "name", None) or "?"
+                if missing == "fcntl":
+                    errors.append("%s: нет модуля fcntl — это не Linux" % factory.__name__)
+                else:
+                    errors.append("%s: нет модуля %s (поставьте python3-spidev)" % (factory.__name__, missing))
+        if self.transport is None:
+            raise GpioError(
+                "не удалось открыть SPI (%s). Проверьте, что в /boot/armbianEnv.txt есть "
+                "overlays=spi-spidev и param_spidev_spi_bus=0, и что плата перезагружена: "
+                "должен появиться /dev/spidev0.0" % "; ".join(errors))
+
+    @property
+    def transport_name(self):
+        return getattr(self.transport, "name", "?")
+
+    def _send(self, addr, values):
+        self.transport.transfer([int(addr) & 0xFF] + [int(v) & 0xFF for v in values])
+
+    def close(self):
+        if self.transport is not None:
+            self.transport.close()
 
 
 class GpioError(RuntimeError):
@@ -286,16 +384,34 @@ def create_matrix(cfg, log=print, simulate=False):
         return SimMatrix(modules, bright, out=sys.stdout, quiet=bool(mcfg.get("quiet", False)))
 
     driver = str(mcfg.get("driver", "sysfs")).lower()
+    scfg = mcfg.get("spi", {})
+
+    def _make_spi():
+        matrix = SpiMatrix(modules, scfg.get("bus", 0), scfg.get("device", 0),
+                           scfg.get("speed_hz", 1000000), bright)
+        log("матрица: SPI через %s, bus=%s dev=%s %s Гц"
+            % (matrix.transport_name, scfg.get("bus", 0), scfg.get("device", 0),
+               scfg.get("speed_hz", 1000000)))
+        return matrix
+
     if driver == "spi":
-        scfg = mcfg.get("spi", {})
-        log("матрица: SPI bus=%s dev=%s %s Гц" % (scfg.get("bus", 0), scfg.get("device", 0), scfg.get("speed_hz", 1000000)))
-        return SpiMatrix(modules, scfg.get("bus", 0), scfg.get("device", 0), scfg.get("speed_hz", 1000000), bright)
+        return _make_spi()
 
     if driver == "sysfs":
         gcfg = mcfg.get("gpio", {})
         log("матрица: sysfs GPIO cs=%s din=%s clk=%s" % (gcfg.get("cs"), gcfg.get("din"), gcfg.get("clk")))
-        return SysfsMatrix(modules, gcfg.get("cs", 67), gcfg.get("din", 64), gcfg.get("clk", 66),
-                           bright, gcfg.get("half_period_us", 4) / 1e6)
+        try:
+            return SysfsMatrix(modules, gcfg.get("cs", 67), gcfg.get("din", 64), gcfg.get("clk", 66),
+                               bright, gcfg.get("half_period_us", 4) / 1e6)
+        except GpioError as exc:
+            auto = bool(mcfg.get("auto_fallback", True))
+            nodes = spi_devices()
+            if auto and nodes:
+                log("sysfs не смог занять пины: %s" % exc)
+                log("но есть %s — значит overlay spi-spidev включён, перехожу на SPI" % nodes[0])
+                log("(чтобы не переключаться молча, поставьте matrix.driver = \"spi\" в конфиге)")
+                return _make_spi()
+            raise
 
     if driver == "sim":
         return SimMatrix(modules, bright)

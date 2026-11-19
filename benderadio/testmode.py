@@ -416,9 +416,21 @@ def run_diag(cfg, log=print, duration=None, simulate=False):
             problems.append("пин %s (линия %d): %s" % (row["name"], row["line"], row["detail"]))
 
     # 4. SPI
-    log("4) SPI: %s" % (", ".join(max7219.spi_devices()) or "устройств /dev/spidev* нет"))
-    if not max7219.spi_devices():
+    nodes = max7219.spi_devices()
+    driver = str(cfg.get("matrix", {}).get("driver", "sysfs")).lower()
+    log("4) SPI: %s" % (", ".join(nodes) or "устройств /dev/spidev* нет"))
+    if nodes and driver == "sysfs":
+        log("   ВНИМАНИЕ: overlay spi-spidev включён (%s), а matrix.driver = sysfs" % nodes[0])
+        problems.append("есть %s, но matrix.driver = \"sysfs\" — поставьте \"spi\"" % nodes[0])
+    elif nodes:
+        log("   драйвер матрицы spi — совпадает с включённым overlay, ок")
+    else:
         log("   (для driver=spi включите в /boot/armbianEnv.txt: overlays=spi-spidev)")
+    try:
+        import spidev  # noqa: F401
+        log("   python3-spidev: установлен")
+    except ImportError:
+        log("   python3-spidev: не установлен — работает встроенный ioctl (это нормально)")
     gpio_chip = _run_cmd(["gpiodetect"])
     if gpio_chip:
         log("   gpiodetect: %s" % gpio_chip.splitlines()[0])

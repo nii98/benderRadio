@@ -369,6 +369,10 @@ def selftest(cfg_path):
     m.set_brightness([3, 3, 3, 9, 9])
     check("матрица: яркость по модулям", m.brightness == [3, 3, 3, 9, 9])
 
+    check("SPI: номер ioctl SPI_IOC_MESSAGE(1)",
+          max7219._IoctlSpiTransport._message(1) == 0x40206B00,
+          hex(max7219._IoctlSpiTransport._message(1)))
+
     f = face_mod.Face(m, {}, lambda *a: None)
     f.init()
     f.search()

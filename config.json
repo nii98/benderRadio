@@ -36,7 +36,7 @@
 
   "matrix": {
     "_driver_как_выбрать": "sysfs — без overlay, пины дёргаются программно (нужен /sys/class/gpio и root). spi — если включён overlays=spi-spidev и есть /dev/spidev0.0. Провода и пины в обоих случаях одни и те же: PC0/PC2/PC3.",
-    "driver": "sysfs",
+    "driver": "spi",
     "modules": 5,
     "brightness": [2, 2, 2, 5, 5],
     "gpio": { "chip": "gpiochip0", "cs": 67, "din": 64, "clk": 66, "half_period_us": 4 },
