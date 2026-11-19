@@ -87,12 +87,26 @@ class Matrix:
     def row_bytes(self, row):
         """Байты одной строки (digit row 1..8) по модулям, в порядке отправки."""
         out = []
-        for m in reversed(range(self.modules)):
+        order = range(self.modules) if getattr(self, "reverse", False) else reversed(range(self.modules))
+        for m in order:
             bits = 0
             for x in range(8):
                 if self.px[row * self.width + m * 8 + x]:
                     bits |= 1 << x
             out.append(bits & 0xFF)
+        return out
+
+    def build_words(self, addr, values):
+        """Поток для сдвиговой цепочки: пара [адрес][данные] на КАЖДЫЙ модуль.
+
+        MAX7219 — это 16-битный сдвиговый регистр на чип, поэтому писать
+        расширенный адрес один раз на всю цепочку нельзя: лишние байты данных
+        попадают в поле адреса следующего чипа (и включают, например, test mode).
+        """
+        out = []
+        for value in values:
+            out.append(int(addr) & 0xFF)
+            out.append(int(value) & 0xFF)
         return out
 
     def flush(self):
@@ -235,7 +249,7 @@ class SpiMatrix(Matrix):
         return getattr(self.transport, "name", "?")
 
     def _send(self, addr, values):
-        self.transport.transfer([int(addr) & 0xFF] + [int(v) & 0xFF for v in values])
+        self.transport.transfer(self.build_words(addr, values))
 
     def close(self):
         if self.transport is not None:
@@ -335,9 +349,8 @@ class SysfsMatrix(Matrix):
 
     def _send(self, addr, values):
         self.cs.write(0)
-        self._shift(int(addr) & 0xFF)
-        for v in values:
-            self._shift(int(v) & 0xFF)
+        for byte in self.build_words(addr, values):
+            self._shift(byte)
         self.cs.write(1)
 
     def close(self):
@@ -380,8 +393,12 @@ def create_matrix(cfg, log=print, simulate=False):
     modules = int(mcfg.get("modules", 5))
     bright = mcfg.get("brightness")
 
+    reverse = bool(mcfg.get("reverse", False))
+
     if simulate:
-        return SimMatrix(modules, bright, out=sys.stdout, quiet=bool(mcfg.get("quiet", False)))
+        matrix = SimMatrix(modules, bright, out=sys.stdout, quiet=bool(mcfg.get("quiet", False)))
+        matrix.reverse = reverse
+        return matrix
 
     driver = str(mcfg.get("driver", "sysfs")).lower()
     scfg = mcfg.get("spi", {})
@@ -395,14 +412,18 @@ def create_matrix(cfg, log=print, simulate=False):
         return matrix
 
     if driver == "spi":
-        return _make_spi()
+        matrix = _make_spi()
+        matrix.reverse = reverse
+        return matrix
 
     if driver == "sysfs":
         gcfg = mcfg.get("gpio", {})
         log("матрица: sysfs GPIO cs=%s din=%s clk=%s" % (gcfg.get("cs"), gcfg.get("din"), gcfg.get("clk")))
         try:
-            return SysfsMatrix(modules, gcfg.get("cs", 67), gcfg.get("din", 64), gcfg.get("clk", 66),
-                               bright, gcfg.get("half_period_us", 4) / 1e6)
+            matrix = SysfsMatrix(modules, gcfg.get("cs", 67), gcfg.get("din", 64), gcfg.get("clk", 66),
+                                 bright, gcfg.get("half_period_us", 4) / 1e6)
+            matrix.reverse = reverse
+            return matrix
         except GpioError as exc:
             auto = bool(mcfg.get("auto_fallback", True))
             nodes = spi_devices()

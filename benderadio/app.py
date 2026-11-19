@@ -368,6 +368,42 @@ def selftest(cfg_path):
     check("матрица: заливка реально залила", all(b == 0xFF for b in m.row_bytes(3)))
     m.set_brightness([3, 3, 3, 9, 9])
     check("матрица: яркость по модулям", m.brightness == [3, 3, 3, 9, 9])
+    m2 = max7219.SimMatrix(5, quiet=True)
+    m2.reverse = False
+    normal = m2.row_bytes(0)
+    m2.reverse = True
+    flipped = m2.row_bytes(0)
+    check("матрица: reverse переворачивает порядок модулей", normal == list(reversed(flipped)))
+
+    # протокол: на каждый модуль должна уходить ПАРА [адрес][данные]
+    words = max7219.Matrix.build_words(m, 0x0F, [0] * 5)
+    check("протокол: 5 модулей = 10 байт, адрес повторяется",
+          len(words) == 10 and words[0::2] == [0x0F] * 5,
+          "байт: %d" % len(words))
+
+    class _Recorder(max7219.Matrix):
+        def __init__(self):
+            max7219.Matrix.__init__(self, 5, [8] * 5)
+            self.frames = []
+
+        def _send(self, addr, values):
+            self.frames.append(self.build_words(addr, values))
+
+    rec = _Recorder()
+    rec.init_chip()
+    init_words = rec.frames[0]
+    check("протокол: init шлёт test-mode=0 всем чипам",
+          init_words == [0x0F, 0x00] * 5,
+          "первые байты: %s" % init_words[:4])
+
+    rec.frames = []
+    rec.px = bytearray([1]) * (rec.width * rec.height)   # всё залито
+    rec.dirty = True
+    rec.flush()
+    check("протокол: кадр = 8 строк по 10 байт", len(rec.frames) == 8 and
+          all(len(f) == 10 for f in rec.frames))
+    check("протокол: в залитом кадре данные = 0xFF",
+          all(f[1] == 0xFF for f in rec.frames))
 
     check("SPI: номер ioctl SPI_IOC_MESSAGE(1)",
           max7219._IoctlSpiTransport._message(1) == 0x40206B00,
